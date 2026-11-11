@@ -1,0 +1,13 @@
+{
+	"admin/services/samba-users": {
+		"title": "Samba Users",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "samba-users/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-samba-users" ]
+		}
+	}
+}

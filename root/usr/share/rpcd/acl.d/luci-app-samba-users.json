@@ -1,0 +1,15 @@
+{
+	"luci-app-samba-users": {
+		"description": "Grant access to Samba User Manager",
+		"read": {
+			"ubus": {
+				"luci.samba_users": [ "list_users", "get_status" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"luci.samba_users": [ "add_user", "remove_user", "change_password" ]
+			}
+		}
+	}
+}

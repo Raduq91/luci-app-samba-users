@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# Ensure menu cache is refreshed after install
+[ -n "$(command -v luci-reload)" ] && luci-reload 2>/dev/null || true
+
+exit 0

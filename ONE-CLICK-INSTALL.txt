@@ -1,0 +1,25 @@
+========================================
+ONE-CLICK INSTALL (run on the router)
+========================================
+
+1. Upload this whole folder to GitHub as a new repository.
+   Example name: luci-app-samba-users
+
+2. On GitHub: create a Release (e.g. v1.1.0) and attach this file
+   as a release asset:
+     dist/luci-app-samba-users-files.tar.gz
+
+   (If you skip the Release, the script can still fall back to the
+    file on the main branch under dist/.)
+
+3. Edit scripts/online-install.sh and change this line:
+     REPO="${REPO:-YOUR_GITHUB_USER/luci-app-samba-users}"
+   to your real user/repo, e.g.:
+     REPO="${REPO:-alice/luci-app-samba-users}"
+
+4. On the router (SSH), run ONE command (replace alice with your user):
+
+sh -c "$(wget -qO- https://raw.githubusercontent.com/alice/luci-app-samba-users/main/scripts/online-install.sh)"
+
+5. Log out of LuCI and log back in.
+   Open: Services → Samba Users

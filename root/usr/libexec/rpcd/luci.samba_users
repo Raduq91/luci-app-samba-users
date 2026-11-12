@@ -1,0 +1,223 @@
+#!/bin/sh
+# luci.samba_users - shell rpcd plugin
+
+MIN_UID=1000
+MAX_UID=60000
+
+json_ok() {
+	echo '{"success":true'"$1"'}'
+}
+
+json_err() {
+	err=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	echo "{\"success\":false,\"error\":\"$err\"}"
+}
+
+is_valid_user() {
+	echo "$1" | grep -qE '^[a-z_][a-z0-9_-]*$' && [ ${#1} -le 32 ] && [ ${#1} -ge 1 ]
+}
+
+user_exists() {
+	grep -q "^$1:" /etc/passwd
+}
+
+find_free_uid() {
+	uid=$MIN_UID
+	while [ $uid -le $MAX_UID ]; do
+		if ! awk -F: -v u="$uid" '$3==u {found=1} END{exit !found}' /etc/passwd; then
+			echo $uid
+			return 0
+		fi
+		uid=$((uid + 1))
+	done
+	return 1
+}
+
+has_ksmbd() { command -v ksmbd.adduser >/dev/null 2>&1; }
+has_smbpasswd() { command -v smbpasswd >/dev/null 2>&1; }
+has_pdbedit() { command -v pdbedit >/dev/null 2>&1; }
+
+list_users() {
+	echo -n '{"users":['
+	awk -F: -v min="$MIN_UID" -v max="$MAX_UID" '
+		$3 >= min && $3 <= max && $1 != "nobody" && $1 != "nfsnobody" {
+			printf "%s{\"username\":\"%s\",\"uid\":%s,\"gid\":%s,\"in_ksmbd\":true,\"in_samba4\":false,\"in_samba\":true}",
+				(n++?",":""), $1, $3, $4
+		}
+	' /etc/passwd
+	echo ']}'
+}
+
+get_status() {
+	k=false; s=false
+	has_ksmbd && k=true
+	(has_smbpasswd || has_pdbedit) && s=true
+	sp=false; pd=false
+	has_smbpasswd && sp=true
+	has_pdbedit && pd=true
+	echo "{\"ksmbd\":$k,\"samba4\":$s,\"smbpasswd\":$sp,\"pdbedit\":$pd,\"min_uid\":$MIN_UID,\"method\":\"shell-passwd\"}"
+}
+
+add_user() {
+	read -r input
+	user=$(printf '%s' "$input" | jsonfilter -e '@.username' 2>/dev/null)
+	pass=$(printf '%s' "$input" | jsonfilter -e '@.password' 2>/dev/null)
+	[ -z "$user" ] && user=$(printf '%s' "$input" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+	[ -z "$pass" ] && pass=$(printf '%s' "$input" | sed -n 's/.*"password"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+	if ! is_valid_user "$user"; then
+		json_err "Invalid username. Use 1-32 chars [a-z_][a-z0-9_-]*"
+		return
+	fi
+	if [ -z "$pass" ]; then
+		json_err "Password must not be empty"
+		return
+	fi
+	if user_exists "$user"; then
+		json_err "System user already exists"
+		return
+	fi
+	if ! has_ksmbd && ! has_smbpasswd; then
+		json_err "No SMB backend. Install ksmbd-utils or samba4-utils"
+		return
+	fi
+
+	uid=$(find_free_uid) || {
+		json_err "No free UID available"
+		return
+	}
+
+	echo "$user:x:$uid:$uid:smb user:/dev/null:/bin/false" >> /etc/passwd || {
+		json_err "Failed to write /etc/passwd"
+		return
+	}
+	echo "$user:x:$uid:" >> /etc/group || {
+		sed -i "/^$user:/d" /etc/passwd
+		json_err "Failed to write /etc/group"
+		return
+	}
+	if [ -f /etc/shadow ]; then
+		grep -q "^$user:" /etc/shadow || echo "$user:!:0:0:99999:7:::" >> /etc/shadow
+	fi
+
+	if has_ksmbd; then
+		if ksmbd.adduser -a -p "$pass" "$user" >/tmp/ksmbd-add.err 2>&1; then
+			json_ok ",\"username\":\"$user\",\"uid\":$uid,\"gid\":$uid,\"backend\":\"ksmbd\",\"message\":\"User created\""
+			return
+		fi
+		err=$(cat /tmp/ksmbd-add.err 2>/dev/null | tr '\n' ' ')
+		sed -i "/^$user:/d" /etc/passwd
+		sed -i "/^$user:/d" /etc/group
+		sed -i "/^$user:/d" /etc/shadow 2>/dev/null
+		json_err "ksmbd.adduser failed: ${err:-unknown}"
+		return
+	fi
+
+	if has_smbpasswd; then
+		printf '%s\n%s\n' "$pass" "$pass" | smbpasswd -a -s "$user" >/tmp/smb-add.err 2>&1
+		if [ $? -eq 0 ]; then
+			json_ok ",\"username\":\"$user\",\"uid\":$uid,\"gid\":$uid,\"backend\":\"samba4\",\"message\":\"User created\""
+			return
+		fi
+		err=$(cat /tmp/smb-add.err 2>/dev/null | tr '\n' ' ')
+		sed -i "/^$user:/d" /etc/passwd
+		sed -i "/^$user:/d" /etc/group
+		sed -i "/^$user:/d" /etc/shadow 2>/dev/null
+		json_err "smbpasswd failed: ${err:-unknown}"
+		return
+	fi
+
+	sed -i "/^$user:/d" /etc/passwd
+	sed -i "/^$user:/d" /etc/group
+	json_err "No working SMB backend"
+}
+
+remove_user() {
+	read -r input
+	user=$(printf '%s' "$input" | jsonfilter -e '@.username' 2>/dev/null)
+	[ -z "$user" ] && user=$(printf '%s' "$input" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+	if ! is_valid_user "$user"; then
+		json_err "Invalid username"
+		return
+	fi
+	case "$user" in
+		root|nobody|daemon) json_err "Refusing to remove protected account"; return ;;
+	esac
+
+	has_ksmbd && ksmbd.adduser -d "$user" >/dev/null 2>&1
+	has_smbpasswd && smbpasswd -x "$user" >/dev/null 2>&1
+	has_pdbedit && pdbedit -x -u "$user" >/dev/null 2>&1
+
+	sed -i "/^$user:/d" /etc/passwd
+	sed -i "/^$user:/d" /etc/group
+	sed -i "/^$user:/d" /etc/shadow 2>/dev/null
+
+	json_ok ",\"username\":\"$user\",\"message\":\"User removed\""
+}
+
+change_password() {
+	read -r input
+	user=$(printf '%s' "$input" | jsonfilter -e '@.username' 2>/dev/null)
+	pass=$(printf '%s' "$input" | jsonfilter -e '@.password' 2>/dev/null)
+	[ -z "$user" ] && user=$(printf '%s' "$input" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+	[ -z "$pass" ] && pass=$(printf '%s' "$input" | sed -n 's/.*"password"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+	if ! is_valid_user "$user"; then
+		json_err "Invalid username"
+		return
+	fi
+	if [ -z "$pass" ]; then
+		json_err "Password must not be empty"
+		return
+	fi
+	if ! user_exists "$user"; then
+		json_err "System user does not exist"
+		return
+	fi
+
+	if has_ksmbd; then
+		if ksmbd.adduser -u -p "$pass" "$user" >/tmp/ksmbd-ch.err 2>&1; then
+			json_ok ",\"username\":\"$user\",\"backend\":\"ksmbd\",\"message\":\"Password updated\""
+			return
+		fi
+		err=$(cat /tmp/ksmbd-ch.err 2>/dev/null | tr '\n' ' ')
+		json_err "ksmbd.adduser -u failed: ${err:-unknown}"
+		return
+	fi
+
+	if has_smbpasswd; then
+		printf '%s\n%s\n' "$pass" "$pass" | smbpasswd -s "$user" >/tmp/smb-ch.err 2>&1
+		if [ $? -eq 0 ]; then
+			json_ok ",\"username\":\"$user\",\"backend\":\"samba4\",\"message\":\"Password updated\""
+			return
+		fi
+		err=$(cat /tmp/smb-ch.err 2>/dev/null | tr '\n' ' ')
+		json_err "smbpasswd failed: ${err:-unknown}"
+		return
+	fi
+
+	json_err "No SMB backend available"
+}
+
+case "$1" in
+	list)
+		printf '%s\n' '{
+			"list_users": {},
+			"get_status": {},
+			"add_user": { "username": "str", "password": "str" },
+			"remove_user": { "username": "str" },
+			"change_password": { "username": "str", "password": "str" }
+		}'
+	;;
+	call)
+		case "$2" in
+			list_users) list_users ;;
+			get_status) get_status ;;
+			add_user) add_user ;;
+			remove_user) remove_user ;;
+			change_password) change_password ;;
+			*) echo '{"error":"unknown method"}' ;;
+		esac
+	;;
+esac

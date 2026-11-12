@@ -47,27 +47,13 @@ return view.extend({
 		var listRes = data[0];
 		var status  = data[1] || {};
 		var users = [];
-		var debug = '';
-
-		try {
-			debug = JSON.stringify(listRes);
-		} catch (e) {
-			debug = String(listRes);
-		}
-
 		if (listRes && listRes.users && listRes.users.length !== undefined) {
 			users = listRes.users;
 		}
 
 		var body = E('div', { 'class': 'cbi-map' });
 
-		body.appendChild(E('h2', {}, [ 'Samba Users DEBUG-v3' ]));
-
-		/* Debug line - remove later once list works */
-		body.appendChild(E('div', {
-			'class': 'alert-message warning',
-			'style': 'font-family:monospace;font-size:11px;word-break:break-all'
-		}, [ 'RPC list_users raw: ', debug || '(empty)' ]));
+		body.appendChild(E('h2', {}, [ 'Samba / ksmbd User Manager' ]));
 
 		if (listRes && listRes.__rpc_error) {
 			body.appendChild(E('div', { 'class': 'alert-message error' }, [

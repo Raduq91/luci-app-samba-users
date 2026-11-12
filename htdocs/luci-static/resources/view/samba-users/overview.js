@@ -31,52 +31,91 @@ const callChangePassword = rpc.declare({
 	params: [ 'username', 'password' ]
 });
 
+function buildUserTable(users, view) {
+	if (!users || users.length === 0) {
+		return E('p', { 'id': 'su-user-list' }, [ _('No managed users found.') ]);
+	}
+
+	const table = E('table', { 'class': 'table', 'id': 'su-user-list' }, [
+		E('tr', { 'class': 'tr table-titles' }, [
+			E('th', { 'class': 'th' }, [ _('Username') ]),
+			E('th', { 'class': 'th' }, [ _('UID') ]),
+			E('th', { 'class': 'th' }, [ _('GID') ]),
+			E('th', { 'class': 'th' }, [ _('Backend') ]),
+			E('th', { 'class': 'th cbi-section-actions' }, [ _('Actions') ])
+		])
+	]);
+
+	users.forEach(function(u) {
+		const backends = [];
+		if (u.in_samba4) backends.push('Samba4');
+		if (u.in_ksmbd)  backends.push('ksmbd');
+		table.appendChild(E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td' }, [ u.username || '' ]),
+			E('td', { 'class': 'td' }, [ u.uid != null ? String(u.uid) : '—' ]),
+			E('td', { 'class': 'td' }, [ u.gid != null ? String(u.gid) : '—' ]),
+			E('td', { 'class': 'td' }, [ backends.join(', ') || '—' ]),
+			E('td', { 'class': 'td cbi-section-actions' }, [
+				E('button', {
+					'class': 'cbi-button cbi-button-action',
+					'click': ui.createHandlerFn(view, 'handleChangePassword', u.username)
+				}, [ _('Password') ]),
+				' ',
+				E('button', {
+					'class': 'cbi-button cbi-button-negative',
+					'click': ui.createHandlerFn(view, 'handleRemoveUser', u.username)
+				}, [ _('Remove') ])
+			])
+		]));
+	});
+
+	return table;
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
-			callListUsers().catch(function(e) { return { _error: String(e.message || e), users: [] }; }),
-			callGetStatus().catch(function(e) { return { _error: String(e.message || e) }; })
+			callListUsers().catch(function(e) {
+				return { _error: String(e.message || e), users: [] };
+			}),
+			callGetStatus().catch(function(e) {
+				return { _error: String(e.message || e) };
+			})
 		]);
 	},
 
 	render: function(data) {
 		const listRes = data[0] || {};
 		const status  = data[1] || {};
-		const users   = Array.isArray(listRes.users) ? listRes.users : [];
+		let users = [];
+		if (listRes && Array.isArray(listRes.users))
+			users = listRes.users;
 
-		let body = E('div', { 'class': 'cbi-map' }, [
+		const body = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('Samba / ksmbd User Manager') ]),
 			E('div', { 'class': 'cbi-map-descr' }, [
-				_('Create and manage share users. System accounts are created by editing /etc/passwd and /etc/group.')
+				_('Create and manage share users.')
 			])
 		]);
 
 		if (listRes._error) {
 			body.appendChild(E('div', { 'class': 'alert-message error' }, [
-				_('Failed to list users (RPC): %s').format(listRes._error),
-				E('br'),
-				_('Log out of LuCI completely, log back in, then refresh. ACL may not be applied yet.')
+				_('Failed to list users: %s').format(listRes._error)
 			]));
 		}
 
 		const backendBits = [];
 		if (status.ksmbd)  backendBits.push('ksmbd');
 		if (status.samba4) backendBits.push('Samba4');
-		if (status._error) {
-			body.appendChild(E('div', { 'class': 'alert-message warning' }, [
-				_('Status RPC error: %s').format(status._error)
-			]));
-		} else if (backendBits.length === 0) {
-			body.appendChild(E('div', { 'class': 'alert-message warning' }, [
-				_('No SMB backend detected (ksmbd.adduser / smbpasswd not found in PATH for rpcd).')
-			]));
-		} else {
+		if (backendBits.length)
 			body.appendChild(E('div', { 'class': 'alert-message notice' }, [
 				_('Active backends: %s').format(backendBits.join(', '))
 			]));
-		}
+		else if (!status._error)
+			body.appendChild(E('div', { 'class': 'alert-message warning' }, [
+				_('No SMB backend detected.')
+			]));
 
-		/* Add-user form */
 		body.appendChild(E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, [ _('Add user') ]),
 			E('div', { 'class': 'cbi-section-node' }, [
@@ -84,26 +123,17 @@ return view.extend({
 					E('label', { 'class': 'cbi-value-title' }, [ _('Username') ]),
 					E('div', { 'class': 'cbi-value-field' }, [
 						E('input', {
-							'type': 'text',
-							'id': 'su-username',
-							'class': 'cbi-input-text',
-							'placeholder': 'myuser',
-							'autocomplete': 'off',
-							'spellcheck': 'false'
-						}),
-						E('div', { 'class': 'cbi-value-description' }, [
-							_('Lowercase letters, digits, underscore and hyphen. Must start with a letter or underscore.')
-						])
+							'type': 'text', 'id': 'su-username', 'class': 'cbi-input-text',
+							'placeholder': 'myuser', 'autocomplete': 'off', 'spellcheck': 'false'
+						})
 					])
 				]),
 				E('div', { 'class': 'cbi-value' }, [
 					E('label', { 'class': 'cbi-value-title' }, [ _('Password') ]),
 					E('div', { 'class': 'cbi-value-field' }, [
 						E('input', {
-							'type': 'password',
-							'id': 'su-password',
-							'class': 'cbi-input-password',
-							'autocomplete': 'new-password'
+							'type': 'password', 'id': 'su-password',
+							'class': 'cbi-input-password', 'autocomplete': 'new-password'
 						})
 					])
 				]),
@@ -111,10 +141,8 @@ return view.extend({
 					E('label', { 'class': 'cbi-value-title' }, [ _('Confirm password') ]),
 					E('div', { 'class': 'cbi-value-field' }, [
 						E('input', {
-							'type': 'password',
-							'id': 'su-password2',
-							'class': 'cbi-input-password',
-							'autocomplete': 'new-password'
+							'type': 'password', 'id': 'su-password2',
+							'class': 'cbi-input-password', 'autocomplete': 'new-password'
 						})
 					])
 				]),
@@ -130,68 +158,24 @@ return view.extend({
 			])
 		]));
 
-		body.appendChild(E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, [ _('Existing users') ]),
-			E('div', { 'class': 'cbi-section-node', 'id': 'su-user-list' })
-		]));
+		const listSection = E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, [
+				_('Existing users'),
+				' ',
+				E('small', {}, [ '(%d)'.format(users.length) ])
+			]),
+			E('div', { 'class': 'cbi-section-node', 'id': 'su-user-list-wrap' }, [
+				buildUserTable(users, this)
+			])
+		]);
+		body.appendChild(listSection);
 
-		this._initialUsers = users;
-		/* Fill table after node is in the document */
-		const self = this;
-		setTimeout(function() { self.renderUserTable(users); }, 0);
 		return body;
 	},
 
 	handleSaveApply: null,
 	handleSave: null,
 	handleReset: null,
-
-	renderUserTable: function(users) {
-		const container = document.getElementById('su-user-list');
-		if (!container) return;
-		container.innerHTML = '';
-
-		if (!users || users.length === 0) {
-			container.appendChild(E('p', {}, [ _('No managed users found.') ]));
-			return;
-		}
-
-		const table = E('table', { 'class': 'table' }, [
-			E('tr', { 'class': 'tr table-titles' }, [
-				E('th', { 'class': 'th' }, [ _('Username') ]),
-				E('th', { 'class': 'th' }, [ _('UID') ]),
-				E('th', { 'class': 'th' }, [ _('GID') ]),
-				E('th', { 'class': 'th' }, [ _('Backend') ]),
-				E('th', { 'class': 'th cbi-section-actions' }, [ _('Actions') ])
-			])
-		]);
-
-		users.forEach(u => {
-			const backends = [];
-			if (u.in_samba4) backends.push('Samba4');
-			if (u.in_ksmbd)  backends.push('ksmbd');
-			const row = E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td', 'data-title': _('Username') }, [ u.username ]),
-				E('td', { 'class': 'td', 'data-title': _('UID') }, [ u.uid != null ? String(u.uid) : '—' ]),
-				E('td', { 'class': 'td', 'data-title': _('GID') }, [ u.gid != null ? String(u.gid) : '—' ]),
-				E('td', { 'class': 'td', 'data-title': _('Backend') }, [ backends.join(', ') || '—' ]),
-				E('td', { 'class': 'td cbi-section-actions' }, [
-					E('button', {
-						'class': 'cbi-button cbi-button-action',
-						'click': ui.createHandlerFn(this, 'handleChangePassword', u.username)
-					}, [ _('Password') ]),
-					' ',
-					E('button', {
-						'class': 'cbi-button cbi-button-negative',
-						'click': ui.createHandlerFn(this, 'handleRemoveUser', u.username)
-					}, [ _('Remove') ])
-				])
-			]);
-			table.appendChild(row);
-		});
-
-		container.appendChild(table);
-	},
 
 	handleAddUser: function() {
 		const username  = (document.getElementById('su-username').value || '').trim();
@@ -211,29 +195,35 @@ return view.extend({
 			return;
 		}
 
-		return callAddUser(username, password).then(res => {
+		const self = this;
+		return callAddUser(username, password).then(function(res) {
 			if (res && res.success) {
 				ui.addNotification(null, E('p', {}, [
-					_('User "%s" created (UID %s, backend %s)').format(res.username, res.uid, res.backend || '')
+					_('User "%s" created (UID %s, backend %s)').format(
+						res.username, res.uid, res.backend || '')
 				]), 'info');
 				document.getElementById('su-username').value = '';
 				document.getElementById('su-password').value = '';
 				document.getElementById('su-password2').value = '';
-				return this.refreshTable();
+				/* Reload the whole view so the list is rebuilt from scratch */
+				return self.map ? self.map.reset() : location.reload();
 			}
 			ui.addNotification(null, E('p', {}, [
-				(res && res.error) ? res.error : _('Failed to create user (no error detail from RPC)')
+				(res && res.error) || _('Failed to create user')
 			]), 'error');
-		}).catch(err => {
+		}).catch(function(err) {
 			ui.addNotification(null, E('p', {}, [
-				_('RPC error: %s — log out of LuCI and log back in, then retry').format(err.message || err)
+				_('RPC error: %s').format(err.message || err)
 			]), 'error');
 		});
 	},
 
 	handleRemoveUser: function(username) {
+		const self = this;
 		return ui.showModal(_('Confirm removal'), [
-			E('p', {}, [ _('Really remove user "%s"? This deletes the system account and the SMB password entry.').format(username) ]),
+			E('p', {}, [
+				_('Really remove user "%s"?').format(username)
+			]),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, [ _('Cancel') ]),
 				' ',
@@ -241,14 +231,21 @@ return view.extend({
 					'class': 'cbi-button cbi-button-negative',
 					'click': ui.createHandlerFn(this, function() {
 						ui.hideModal();
-						return callRemoveUser(username).then(res => {
+						return callRemoveUser(username).then(function(res) {
 							if (res && res.success) {
-								ui.addNotification(null, E('p', {}, [ _('User "%s" removed').format(username) ]), 'info');
-								return this.refreshTable();
+								ui.addNotification(null, E('p', {}, [
+									_('User "%s" removed').format(username)
+								]), 'info');
+								location.reload();
+							} else {
+								ui.addNotification(null, E('p', {}, [
+									(res && res.error) || _('Failed to remove user')
+								]), 'error');
 							}
-							ui.addNotification(null, E('p', {}, [ (res && res.error) || _('Failed to remove user') ]), 'error');
-						}).catch(err => {
-							ui.addNotification(null, E('p', {}, [ _('RPC error: %s').format(err.message || err) ]), 'error');
+						}).catch(function(err) {
+							ui.addNotification(null, E('p', {}, [
+								_('RPC error: %s').format(err.message || err)
+							]), 'error');
 						});
 					})
 				}, [ _('Remove') ])
@@ -257,12 +254,18 @@ return view.extend({
 	},
 
 	handleChangePassword: function(username) {
-		const pwd1 = E('input', { 'type': 'password', 'class': 'cbi-input-password', 'style': 'width:100%', 'autocomplete': 'new-password' });
-		const pwd2 = E('input', { 'type': 'password', 'class': 'cbi-input-password', 'style': 'width:100%', 'autocomplete': 'new-password' });
+		const pwd1 = E('input', {
+			'type': 'password', 'class': 'cbi-input-password',
+			'style': 'width:100%', 'autocomplete': 'new-password'
+		});
+		const pwd2 = E('input', {
+			'type': 'password', 'class': 'cbi-input-password',
+			'style': 'width:100%', 'autocomplete': 'new-password'
+		});
 
 		return ui.showModal(_('Change password for "%s"').format(username), [
 			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [ _('New password') ]), pwd1 ]),
-			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [ _('Confirm password') ]), pwd2 ]),
+			E('div', { 'class': 'cbi-value' }, [ E('label', {}, [ _('Confirm') ]), pwd2 ]),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, [ _('Cancel') ]),
 				' ',
@@ -280,25 +283,23 @@ return view.extend({
 							return;
 						}
 						ui.hideModal();
-						return callChangePassword(username, p1).then(res => {
+						return callChangePassword(username, p1).then(function(res) {
 							if (res && res.success)
-								ui.addNotification(null, E('p', {}, [ _('Password for "%s" updated').format(username) ]), 'info');
+								ui.addNotification(null, E('p', {}, [
+									_('Password for "%s" updated').format(username)
+								]), 'info');
 							else
-								ui.addNotification(null, E('p', {}, [ (res && res.error) || _('Failed to change password') ]), 'error');
-						}).catch(err => {
-							ui.addNotification(null, E('p', {}, [ _('RPC error: %s').format(err.message || err) ]), 'error');
+								ui.addNotification(null, E('p', {}, [
+									(res && res.error) || _('Failed to change password')
+								]), 'error');
+						}).catch(function(err) {
+							ui.addNotification(null, E('p', {}, [
+								_('RPC error: %s').format(err.message || err)
+							]), 'error');
 						});
 					})
 				}, [ _('Change') ])
 			])
 		]);
-	},
-
-	refreshTable: function() {
-		return callListUsers().then(res => {
-			this.renderUserTable((res && res.users) || []);
-		}).catch(() => {
-			this.renderUserTable([]);
-		});
 	}
 });

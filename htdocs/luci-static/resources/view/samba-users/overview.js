@@ -61,7 +61,7 @@ return view.extend({
 
 		var body = E('div', { 'class': 'cbi-map' });
 
-		body.appendChild(E('h2', {}, [ 'Samba / ksmbd User Manager' ]));
+		body.appendChild(E('h2', {}, [ 'Samba Users DEBUG-v3' ]));
 
 		/* Debug line - remove later once list works */
 		body.appendChild(E('div', {

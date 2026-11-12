@@ -38,14 +38,68 @@ has_smbpasswd() { command -v smbpasswd >/dev/null 2>&1; }
 has_pdbedit() { command -v pdbedit >/dev/null 2>&1; }
 
 list_users() {
-	echo -n '{"users":['
+	# Merge: system accounts (UID>=1000) + entries in ksmbdpwd.db + samba4 pdb
+	tmp=/tmp/su-list-$$
+	: > "$tmp.sys"
+	: > "$tmp.ksm"
+	: > "$tmp.s4"
+	: > "$tmp.all"
+
 	awk -F: -v min="$MIN_UID" -v max="$MAX_UID" '
 		$3 >= min && $3 <= max && $1 != "nobody" && $1 != "nfsnobody" {
-			printf "%s{\"username\":\"%s\",\"uid\":%s,\"gid\":%s,\"in_ksmbd\":true,\"in_samba4\":false,\"in_samba\":true}",
-				(n++?",":""), $1, $3, $4
+			print $1 "	" $3 "	" $4
 		}
-	' /etc/passwd
+	' /etc/passwd > "$tmp.sys"
+
+	if [ -f /etc/ksmbd/ksmbdpwd.db ]; then
+		# Format: username:base64password (one per line)
+		awk -F: '
+			$1 != "" && $1 !~ /^#/ {
+				gsub(/\r/, "", $1)
+				if ($1 ~ /^[a-zA-Z_][a-zA-Z0-9_-]*$/) print $1
+			}
+		' /etc/ksmbd/ksmbdpwd.db 2>/dev/null | sort -u > "$tmp.ksm"
+	fi
+
+	if has_pdbedit; then
+		pdbedit -L 2>/dev/null | awk -F: "NF>=1 && \$1 != \"\" {print \$1}" | sort -u > "$tmp.s4"
+	elif [ -f /etc/samba/smbpasswd ]; then
+		awk -F: "NF>=1 && \$1 !~ /^#/ && \$1 != \"\" {print \$1}" /etc/samba/smbpasswd 2>/dev/null | sort -u > "$tmp.s4"
+	fi
+
+	# union of all usernames
+	{ cut -f1 "$tmp.sys"; cat "$tmp.ksm"; cat "$tmp.s4"; } | sort -u > "$tmp.all"
+
+	echo -n '{"users":['
+	first=1
+	while IFS= read -r name; do
+		[ -z "$name" ] && continue
+		case "$name" in root|nobody|daemon|nfsnobody) continue ;; esac
+
+		uid="null"; gid="null"
+		line=$(awk -F"	" -v n="$name" "\$1==n {print; exit}" "$tmp.sys")
+		if [ -n "$line" ]; then
+			uid=$(echo "$line" | cut -f2)
+			gid=$(echo "$line" | cut -f3)
+		fi
+
+		in_ksmbd=false
+		grep -qx "$name" "$tmp.ksm" 2>/dev/null && in_ksmbd=true
+
+		in_samba4=false
+		grep -qx "$name" "$tmp.s4" 2>/dev/null && in_samba4=true
+
+		# If only in passwd but ksmbd tool exists, still mark possible
+		in_samba=false
+		[ "$in_ksmbd" = true ] || [ "$in_samba4" = true ] && in_samba=true
+
+		[ $first -eq 1 ] || echo -n ','
+		first=0
+		printf '{"username":"%s","uid":%s,"gid":%s,"in_ksmbd":%s,"in_samba4":%s,"in_samba":%s}' 			"$name" "$uid" "$gid" "$in_ksmbd" "$in_samba4" "$in_samba"
+	done < "$tmp.all"
 	echo ']}'
+
+	rm -f "$tmp.sys" "$tmp.ksm" "$tmp.s4" "$tmp.all"
 }
 
 get_status() {
@@ -164,10 +218,12 @@ remove_user() {
 		pdbedit -x -u "$user" >/dev/null 2>&1 || true
 	fi
 
-	# Only remove system account after SMB delete succeeded
-	sed -i "/^$user:/d" /etc/passwd
-	sed -i "/^$user:/d" /etc/group
-	sed -i "/^$user:/d" /etc/shadow 2>/dev/null
+	# Only remove system account if it exists (after SMB delete succeeded)
+	if grep -q "^$user:" /etc/passwd 2>/dev/null; then
+		sed -i "/^$user:/d" /etc/passwd
+		sed -i "/^$user:/d" /etc/group
+		sed -i "/^$user:/d" /etc/shadow 2>/dev/null
+	fi
 
 	json_ok ",\"username\":\"$user\",\"message\":\"User removed\""
 }

@@ -145,10 +145,26 @@ remove_user() {
 		root|nobody|daemon) json_err "Refusing to remove protected account"; return ;;
 	esac
 
-	has_ksmbd && ksmbd.adduser -d "$user" >/dev/null 2>&1
-	has_smbpasswd && smbpasswd -x "$user" >/dev/null 2>&1
-	has_pdbedit && pdbedit -x -u "$user" >/dev/null 2>&1
+	# Delete from SMB first. If ksmbd refuses (user still required by a share),
+	# do NOT remove the system account — leave everything as-is.
+	if has_ksmbd; then
+		err=$(ksmbd.adduser -d "$user" 2>&1)
+		rc=$?
+		if [ $rc -ne 0 ]; then
+			err1=$(printf '%s' "$err" | tr '\n' ' ' | sed 's/"/\\"/g')
+			json_err "Cannot remove from ksmbd (share still requires this user?): $err1"
+			return
+		fi
+	fi
 
+	if has_smbpasswd; then
+		smbpasswd -x "$user" >/dev/null 2>&1 || true
+	fi
+	if has_pdbedit; then
+		pdbedit -x -u "$user" >/dev/null 2>&1 || true
+	fi
+
+	# Only remove system account after SMB delete succeeded
 	sed -i "/^$user:/d" /etc/passwd
 	sed -i "/^$user:/d" /etc/group
 	sed -i "/^$user:/d" /etc/shadow 2>/dev/null

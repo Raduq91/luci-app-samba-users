@@ -3,25 +3,23 @@
 'require rpc';
 'require ui';
 
-const callListUsers      = rpc.declare({
+const callListUsers = rpc.declare({
 	object: 'luci.samba_users',
-	method: 'list_users',
-	expect: { users: [] }
+	method: 'list_users'
 });
 
-const callGetStatus      = rpc.declare({
+const callGetStatus = rpc.declare({
 	object: 'luci.samba_users',
-	method: 'get_status',
-	expect: { }
+	method: 'get_status'
 });
 
-const callAddUser        = rpc.declare({
+const callAddUser = rpc.declare({
 	object: 'luci.samba_users',
 	method: 'add_user',
 	params: [ 'username', 'password' ]
 });
 
-const callRemoveUser     = rpc.declare({
+const callRemoveUser = rpc.declare({
 	object: 'luci.samba_users',
 	method: 'remove_user',
 	params: [ 'username' ]
@@ -36,29 +34,41 @@ const callChangePassword = rpc.declare({
 return view.extend({
 	load: function() {
 		return Promise.all([
-			callListUsers(),
-			callGetStatus()
+			callListUsers().catch(function(e) { return { _error: String(e.message || e), users: [] }; }),
+			callGetStatus().catch(function(e) { return { _error: String(e.message || e) }; })
 		]);
 	},
 
 	render: function(data) {
-		const users  = data[0].users || [];
-		const status = data[1] || {};
+		const listRes = data[0] || {};
+		const status  = data[1] || {};
+		const users   = Array.isArray(listRes.users) ? listRes.users : [];
 
 		let body = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('Samba / ksmbd User Manager') ]),
 			E('div', { 'class': 'cbi-map-descr' }, [
-				_('Create and manage share users. System accounts are created by editing /etc/passwd and /etc/group (no shadow-* packages needed).')
+				_('Create and manage share users. System accounts are created by editing /etc/passwd and /etc/group.')
 			])
 		]);
 
-		/* Backend status */
+		if (listRes._error) {
+			body.appendChild(E('div', { 'class': 'alert-message error' }, [
+				_('Failed to list users (RPC): %s').format(listRes._error),
+				E('br'),
+				_('Log out of LuCI completely, log back in, then refresh. ACL may not be applied yet.')
+			]));
+		}
+
 		const backendBits = [];
-		if (status.ksmbd)   backendBits.push('ksmbd');
-		if (status.samba4)  backendBits.push('Samba4');
-		if (backendBits.length === 0) {
+		if (status.ksmbd)  backendBits.push('ksmbd');
+		if (status.samba4) backendBits.push('Samba4');
+		if (status._error) {
 			body.appendChild(E('div', { 'class': 'alert-message warning' }, [
-				_('No SMB backend detected. Install ksmbd-utils (for ksmbd) and/or samba4-utils (for Samba4).')
+				_('Status RPC error: %s').format(status._error)
+			]));
+		} else if (backendBits.length === 0) {
+			body.appendChild(E('div', { 'class': 'alert-message warning' }, [
+				_('No SMB backend detected (ksmbd.adduser / smbpasswd not found in PATH for rpcd).')
 			]));
 		} else {
 			body.appendChild(E('div', { 'class': 'alert-message notice' }, [
@@ -120,15 +130,21 @@ return view.extend({
 			])
 		]));
 
-		/* Existing users */
 		body.appendChild(E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, [ _('Existing users') ]),
 			E('div', { 'class': 'cbi-section-node', 'id': 'su-user-list' })
 		]));
 
-		this.renderUserTable(users);
+		this._initialUsers = users;
+		/* Fill table after node is in the document */
+		const self = this;
+		setTimeout(function() { self.renderUserTable(users); }, 0);
 		return body;
 	},
+
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null,
 
 	renderUserTable: function(users) {
 		const container = document.getElementById('su-user-list');
@@ -205,9 +221,13 @@ return view.extend({
 				document.getElementById('su-password2').value = '';
 				return this.refreshTable();
 			}
-			ui.addNotification(null, E('p', {}, [ (res && res.error) || _('Failed to create user') ]), 'error');
+			ui.addNotification(null, E('p', {}, [
+				(res && res.error) ? res.error : _('Failed to create user (no error detail from RPC)')
+			]), 'error');
 		}).catch(err => {
-			ui.addNotification(null, E('p', {}, [ _('RPC error: %s').format(err.message || err) ]), 'error');
+			ui.addNotification(null, E('p', {}, [
+				_('RPC error: %s — log out of LuCI and log back in, then retry').format(err.message || err)
+			]), 'error');
 		});
 	},
 
@@ -269,18 +289,16 @@ return view.extend({
 							ui.addNotification(null, E('p', {}, [ _('RPC error: %s').format(err.message || err) ]), 'error');
 						});
 					})
-				}, [ _('Save') ])
+				}, [ _('Change') ])
 			])
 		]);
 	},
 
 	refreshTable: function() {
 		return callListUsers().then(res => {
-			this.renderUserTable(res.users || []);
+			this.renderUserTable((res && res.users) || []);
+		}).catch(() => {
+			this.renderUserTable([]);
 		});
-	},
-
-	handleSaveApply: null,
-	handleSave: null,
-	handleReset: null
+	}
 });
